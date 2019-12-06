@@ -1,0 +1,183 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Biblio::SIF::Patron;
+use JSON;
+use Data::UUID;
+use Getopt::Long
+    qw(:config posix_default gnu_compat require_order bundling no_ignore_case);
+
+sub usage;
+sub fatal;
+
+my $json = JSON->new->pretty;
+my $ug = Data::UUID->new;
+my $term = "\x0d\x0a";
+
+my %uuid;
+read_uuid_files();
+
+GetOptions(
+    't|terminator=s' => \$term,
+    'z' => sub { $term = "\x00\n" },
+    'Z' => sub { $term = "\x0a\x00\x0a" },
+    '0' => sub { $term = "\x00" },
+    'n' => sub { $term = "\n" },
+    'crlf' => sub { $term = "\x0d\x0a" },
+);
+
+my $iter = Biblio::SIF::Patron->iterator(
+    @ARGV ? shift @ARGV : \*STDIN,
+    'terminator' => $term,
+);
+my @patrons;
+while (1) {
+    my $patron = $iter->();
+    last if !defined $patron;
+    $patron = $patron->as_hash;
+    my ($fn, $mn, $ln, $barcode) = @$patron{qw(first_name middle_name last_name barcode1)};
+    my ($iid, $pg) = @$patron{qw(institution_id group1)};
+    my @addresses;
+    my ($email, $phone, $cell);
+    foreach my $addr (@$patron{qw(address1 address2 address3)}) {
+        my $type = $addr->{'type'};
+        if ($type == 1) {
+            # Permanent
+            $phone ||= $addr->{'phone'};
+            $cell ||= $addr->{'cell_phone'};
+            push @addresses, address($addr);
+        }
+        elsif ($type == 2) {
+            # Temporary
+            $phone ||= $addr->{'phone'};
+            $cell ||= $addr->{'cell_phone'};
+            push @addresses, address($addr);
+        }
+        elsif ($type == 3) {
+            # E-mail
+            $email = $addr->{'line1'};
+        }
+    }
+    push @patrons, {
+        required('id' => uuidgen()),
+        required('username' => $iid),
+        required('externalSystemId' => $iid),
+        optional('barcode' => $barcode),
+        required('active' => $patron->{'status1'} == 1 ? 1 : 0),
+        required('type' => 'somerandomstring'),
+        required('patronGroup' => $uuid{'patronGroup:'.$pg}),
+        optional('enrollmentDate' => $patron->{'begin_date'}),
+        optional('expirationDate' => $patron->{'end_date'}),
+        'personal' => {
+            required('lastName' => $ln),
+            optional('firstName' => $fn),
+            optional('middleName' => $mn),
+            optional('email' => $email),
+        },
+        'addresses' => \@addresses,
+    };
+    1;
+}
+print $json->encode(\@patrons);
+
+sub address {
+    my ($addr) = @_;
+    my $type = $addr->{'type'};  # 1 (primary), 2 (secondary)
+    return {
+        required('addressTypeId' => $type == 1 ? 'Campus' : 'Home'),
+        required('primaryAddress' => $type == 1 ? 1 : 0),
+        optional('addressLine1' => $addr->{'line1'}),
+        optional('addressLine2' => $addr->{'line2'}),
+        optional('city' => $addr->{'city'}),
+        optional('region' => $addr->{'state'}),
+        optional('postalCode' => $addr->{'zipcode'}),
+        optional('countryId' => $addr->{'country'}),
+    };
+}
+
+sub required {
+    my ($k, $v) = @_;
+    die if !defined $v;
+    return ($k => $v);
+}
+
+sub optional {
+    my ($k, $v);
+    return if !defined $v;
+    return ($k => $v);
+}
+
+sub uuidgen {
+    return $ug->create_str;
+}
+
+sub read_uuid_files {
+    my @files = <*.uuidmap>;
+    foreach my $file (@files) {
+        $file =~ m{([^/]+)\.uuidmap$}
+            or fatal "wtf?";
+        my $pfx = $1 . ':';
+        open my $fh, '<', $file
+            or fatal "open $file: $!";
+        while (<$fh>) {
+            next if /^\s*(?:#.*)?$/;  # Skip blank lines and comments
+            chomp;
+            my ($uuid, $val) = split /\s+/;
+            $uuid{$pfx.$val} = $uuid;
+        }
+    }
+}
+
+sub usage {
+    exit 1;
+}
+
+sub fatal {
+    exit 2;
+}
+
+__END__
+address
+as_hash
+as_string
+barcode
+barcode1
+barcode2
+barcode3
+barcodes
+cancelled_bookings
+claims_return
+expiration_date
+fields
+first_last_name
+first_name
+group1
+group2
+group3
+groups
+historical_bookings
+historical_call_slips
+historical_charges
+historical_distributions
+historical_short_loans
+id
+institution_id
+last_first_name
+last_name
+late_media_returns
+lost_items
+middle_name
+name_type
+notes
+num_addresses
+purge_date
+registration_date
+self_shelved
+ssn
+status1
+status2
+status3
+statuses
+title
