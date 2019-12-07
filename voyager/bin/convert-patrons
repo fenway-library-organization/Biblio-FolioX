@@ -16,10 +16,11 @@ my $json = JSON->new->pretty;
 my $ug = Data::UUID->new;
 my $term = "\x0d\x0a";
 
+my $inst;
 my %uuid;
-read_uuid_files();
 
 GetOptions(
+    'i|instance=s' => \$inst,
     't|terminator=s' => \$term,
     'z' => sub { $term = "\x00\n" },
     'Z' => sub { $term = "\x0a\x00\x0a" },
@@ -27,6 +28,8 @@ GetOptions(
     'n' => sub { $term = "\n" },
     'crlf' => sub { $term = "\x0d\x0a" },
 );
+
+read_uuid_files();
 
 my $iter = Biblio::SIF::Patron->iterator(
     @ARGV ? shift @ARGV : \*STDIN,
@@ -42,7 +45,8 @@ while (1) {
     my @addresses;
     my ($email, $phone, $cell);
     foreach my $addr (@$patron{qw(address1 address2 address3)}) {
-        my $type = $addr->{'type'};
+        my $type = $addr->{'type'}
+            or next;
         if ($type == 1) {
             # Permanent
             $phone ||= $addr->{'phone'};
@@ -114,7 +118,7 @@ sub uuidgen {
 }
 
 sub read_uuid_files {
-    my @files = <*.uuidmap>;
+    my @files = </usr/local/flolio/instance/$inst/map/*.uuidmap>;
     foreach my $file (@files) {
         $file =~ m{([^/]+)\.uuidmap$}
             or fatal "wtf?";
