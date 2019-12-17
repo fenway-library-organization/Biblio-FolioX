@@ -22,15 +22,6 @@ sub new {
     return $self;
 }
 
-sub init {
-    my ($self) = @_;
-    my $ug = Data::UUID->new;
-    $self->{'uuidgen'} = sub {
-        return $ug->create_str;
-    };
-    return $self;
-}
-
 sub _open {
     my ($self, $file) = @_;
     open my $fh, '<', $file

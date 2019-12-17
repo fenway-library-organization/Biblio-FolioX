@@ -12,6 +12,7 @@ sub init {
     $self->{'uuidgen'} = sub {
         return $ug->create_str;
     };
+    $self->{'uuidmap'} = $self->{'site'}{'uuidmap'};
     return $self;
 }
 
@@ -37,7 +38,6 @@ sub iterate {
     my $self = shift;
     local $_;
     my %arg;
-    my ($sub, $batch_size);
     if (@_ > 1 ) {
         %arg = @_;
     }
@@ -45,15 +45,32 @@ sub iterate {
         $arg{'each'} = shift @_;
     }
     my $each = $arg{'each'} || die "no callback";
-    $batch_size = 1 if !defined $batch_size;
+    my $error = $arg{'error'};
+    my $batch_size = $arg{'batch_size'} || 1;
     my $file = $self->{'file'};
     my $fh = $self->{'fh'} || $self->_open($file);
     my @users;
-    while (defined(my $user = $self->_next($fh))) {
-        push @users, $user;
-        if (@users == $batch_size) {
-            $each->(@users);
-            @users = ();
+    my $n = 0;
+    while (1) {
+        my ($user, $ok, $err);
+        eval {
+            $user = $self->_next($fh);
+            ($ok, $err) = (1);
+        };
+        if ($user) {
+            $n++;
+            push @users, $user;
+            if (@users == $batch_size) {
+                $each->(@users);
+                @users = ();
+            }
+        }
+        elsif ($ok) {
+            last;
+        }
+        else {
+            $n++;
+            $error->($n) if $error;
         }
     }
     $each->(@users) if @users;

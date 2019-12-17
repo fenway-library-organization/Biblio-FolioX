@@ -3,11 +3,17 @@ package Biblio::FolioX::PatronFile::Millennium;
 use strict;
 use warnings;
 
+use POSIX qw(strftime);
 use Clone qw(clone);
 use Biblio::FolioX::PatronFile;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile);
+
+BEGIN {
+    *Biblio::FolioX::PatronFile::Millennium::_req = *Biblio::FolioX::PatronFile::_req;
+    *Biblio::FolioX::PatronFile::Millennium::_opt = *Biblio::FolioX::PatronFile::_opt;
+}
 
 sub new {
     my $cls = shift;
@@ -34,16 +40,30 @@ sub _next {
             if $row[-1] ne '';
         pop @row;
     }
-    my %row;
+    my %row = (
+        '_raw' => $line,
+    );
     @row{@$cols} = @row;
     return $self->_make_user(\%row);
 }
 
+sub _has_any {
+    my $row = shift;
+    foreach my $val (@$row{@_}) {
+        return 1 if defined $val && length $val;
+    }
+    return 0;
+}
+
 sub _make_generic_user {
     my ($self, $row) = @_;
+    my $uuidmap = $self->{'uuidmap'}{'addressType'}
+        or die "no UUID map";
     my @addresses;
+    my ($home, $campus) = @$uuidmap{qw(Home Campus)};
     my $user = {
-        _req('id'         => $self->_uuid),
+        # _req('id'         => $self->_uuid),
+        _req('_raw'       => $row->{'_raw'}),
         _req('personal'   => {
             _opt('firstName'   => $row->{'first_name'}),
             _opt('lastName'    => $row->{'last_name'}),
@@ -57,20 +77,20 @@ sub _make_generic_user {
         }),
         _req('addresses'  => \@addresses),
     };
-    my @home_address = @$row{qw(home_address_1 home_address_2 home_city home_state home_zip_code)};
-    if (grep { defined($_) && length($_) } @home_address) {
+    if (_has_any($row, qw(home_address_1 home_address_2 home_city home_state home_zip_code))) {
+        # Home address
         push @addresses, {
-            _req('id'           => $self->_uuid),
-            _opt('addressLine1' => $user->{'home_address_1'}),
-            _opt('addressLine2' => $user->{'home_address_2'}),
-            _opt('city'         => $user->{'home_city'}),
-            _opt('region'       => $user->{'home_state'}),
-            _opt('postalCode'   => $user->{'home_zip_code'}),
+            # _req('id'           => $self->_uuid),
+            _req('addressTypeId' => $home),
+            _opt('addressLine1' => $row->{'home_address_1'}),
+            _opt('addressLine2' => $row->{'home_address_2'}),
+            _opt('city'         => $row->{'home_city'}),
+            _opt('region'       => $row->{'home_state'}),
+            _opt('postalCode'   => $row->{'home_zip_code'}),
             _opt('countryId'    => 'US'),
         };
     }
-    my @dorm_address = @$row{qw(dorm_room dorm_address dorm_city dorm_state dorm_zip_code)};
-    if (grep { defined($_) && length($_) } @dorm_address) {
+    if (_has_any($row, qw(dorm_room dorm_address dorm_city dorm_state dorm_zip_code))) {
         my %defaults = (
             'dorm_address'  => '255 Brookline Avenue',
             'dorm_city'     => 'Boston',
@@ -80,14 +100,33 @@ sub _make_generic_user {
         );
         push @addresses, {
             %defaults,
-            _req('id'           => $self->_uuid),
-            _opt('addressLine1' => $user->{'dorm_room'}),
-            _opt('addressLine2' => $user->{'dorm_address'}),
-            _opt('city'         => $user->{'dorm_city'}),
-            _opt('region'       => $user->{'dorm_state'}),
-            _opt('postalCode'   => $user->{'dorm_zip_code'}),
+            # _req('id'           => $self->_uuid),
+            _req('addressTypeId' => $campus),
+            _opt('addressLine1' => $row->{'dorm_room'}),
+            _opt('addressLine2' => $row->{'dorm_address'}),
+            _opt('city'         => $row->{'dorm_city'}),
+            _opt('region'       => $row->{'dorm_state'}),
+            _opt('postalCode'   => $row->{'dorm_zip_code'}),
         };
     }
+    if (_has_any($row, qw(work_address_1 work_address_2))) {
+        push @addresses, {
+            # _req('id'           => $self->_uuid),
+            _req('addressTypeId' => $campus),
+            _opt('addressLine1' => $row->{'work_address_1'}),
+            _opt('addressLine2' => $row->{'work_address_2'}),
+            _opt('city'         => $row->{'work_city'} || 'Boston'),
+            _opt('region'       => $row->{'work_state'} || 'MA'),
+            _opt('postalCode'   => $row->{'work_zip_code'} || '02215'),
+            _opt('countryId'    => 'US'),
+        };
+    }
+    if (@addresses) {
+        $addresses[0]{'primaryAddress'} = 1;
+    }
+	my ($id_number) = @$row{qw(id_number)};
+    $user->{'externalSystemId'} = $id_number if defined $id_number;
+    $user->{'patronGroup'} = $self->_patron_group($row);
     return $user;
 }
 
@@ -101,13 +140,13 @@ use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::Millennium);
 
 BEGIN {
-    *_req = *Biblio::FolioX::PatronFile::_req;
-    *_opt = *Biblio::FolioX::PatronFile::_opt;
+    *Biblio::FolioX::PatronFile::Millennium::Students::_req = *Biblio::FolioX::PatronFile::_req;
+    *Biblio::FolioX::PatronFile::Millennium::Students::_opt = *Biblio::FolioX::PatronFile::_opt;
 }
 
 sub _columns {
     return [qw(
-        acad_program
+        program
         class
         id_number
         last_name
@@ -132,7 +171,7 @@ sub _columns {
 sub _apply_defaults {
     my ($self, $row) = @_;
     my %def = (
-        dorm_address  => '255_Brookline_Avenue',
+        dorm_address  => '255 Brookline Avenue',
         dorm_city     => 'Boston',
         dorm_state    => 'MA',
         dorm_zip_code => '02215',
@@ -147,9 +186,24 @@ sub _apply_defaults {
 sub _make_user {
     my ($self, $row) = @_;
     $self->_apply_defaults($row);
-    my @addresses;
     my $user = $self->_make_generic_user($row);
     return $user;
+}
+
+sub _patron_group {
+    my ($self, $row) = @_;
+    my ($k1, $k2) = @$row{qw(program class)};
+    $k1 =~ s/.+\.(?=OL$)//     # All *.OL programs => OL
+        or
+    $k1 =~ s/^PH\.D\..*/PH.D/  # All PH.D.* classes => PH.D
+        ;
+    my $uuidmap = $self->{'uuidmap'}{'patronGroup'}
+        or die "no UUID map";
+    foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
+        my $v = $uuidmap->{$_};
+        return $v if defined $v;
+    }
+    die "no patron group: program=$k1, class=$k2";
 }
 
 # ------------------------------------------------------------------------------
@@ -160,14 +214,14 @@ use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::Millennium);
 
 BEGIN {
-    *_req = *Biblio::FolioX::PatronFile::_req;
-    *_opt = *Biblio::FolioX::PatronFile::_opt;
+    *Biblio::FolioX::PatronFile::Millennium::Employees::_req = *Biblio::FolioX::PatronFile::_req;
+    *Biblio::FolioX::PatronFile::Millennium::Employees::_opt = *Biblio::FolioX::PatronFile::_opt;
 }
 
 sub _columns {
     return [qw(
         department
-        position_class
+        affiliation
         id_number
         last_name
         first_name
@@ -193,21 +247,20 @@ sub _apply_defaults {
 sub _make_user {
     my ($self, $row) = @_;
     $self->_apply_defaults($row);
-    my $user = $self->_default_user;
-    my $personal = $user->{'personal'} ||= {};
-    my $addresses = $personal->{'addresses'} ||= [];
-    my @home_address = @$row{qw(home_address_1 home_address_2 home_city home_state home_zip_code)};
-    if (grep { defined($_) && length($_) } @home_address) {
-        push @$addresses, {
-            _req('id'           => $self->_uuid),
-            _opt('addressLine1' => $row->{'home_address_1'}),
-            _opt('addressLine2' => $row->{'home_address_2'}),
-            _opt('city'         => $row->{'home_city'}),
-            _opt('region'       => $row->{'home_state'}),
-            _opt('postalCode'   => $row->{'home_zip_code'}),
-        };
-    }
+    my $user = $self->_make_generic_user($row);
     return $user;
+}
+
+sub _patron_group {
+    my ($self, $row) = @_;
+    my ($k1, $k2) = @$row{qw(department affiliation)};
+    my $uuidmap = $self->{'uuidmap'}
+        or die "no UUID map";
+    foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
+        my $v = $uuidmap->{'patronGroup:'.$_};
+        return $v if defined $v;
+    }
+    die "no patron group: department=$k1, affiliation=$k2";
 }
 
 1;
