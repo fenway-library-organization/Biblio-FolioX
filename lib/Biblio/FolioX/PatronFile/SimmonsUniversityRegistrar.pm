@@ -242,10 +242,10 @@ sub _apply_defaults {
 sub _patron_group {
     my ($self, $row) = @_;
     my ($k1, $k2) = @$row{qw(department affiliation)};
-    my $uuidmap = $self->{'uuidmap'}
+    my $uuidmap = $self->{'uuidmap'}{'patronGroup'}
         or die "no UUID map";
     foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
-        my $v = $uuidmap->{'patronGroup:'.$_};
+        my $v = $uuidmap->{$_};
         return $v if defined $v;
     }
     die "no patron group: department=$k1, affiliation=$k2";
