@@ -6,14 +6,14 @@ use warnings;
 use POSIX qw(strftime);
 use Clone qw(clone);
 use JSON;
-use Biblio::Folio::BatchFile;
+use Biblio::Folio::Site::BatchFile;
 
 use vars qw(@ISA);
-@ISA = qw(Biblio::Folio::BatchFile);
+@ISA = qw(Biblio::Folio::Site::BatchFile);
 
 BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_req = *Biblio::Folio::BatchFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_opt = *Biblio::Folio::BatchFile::_opt;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_req = *Biblio::Folio::Site::BatchFile::_req;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_opt = *Biblio::Folio::Site::BatchFile::_opt;
 }
 
 sub new {
@@ -136,14 +136,14 @@ sub _has_any {
 
 package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students;
 
-use Biblio::Folio::BatchFile;
+use Biblio::Folio::Site::BatchFile;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
 BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_req = *Biblio::Folio::BatchFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_opt = *Biblio::Folio::BatchFile::_opt;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_req = *Biblio::Folio::Site::BatchFile::_req;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_opt = *Biblio::Folio::Site::BatchFile::_opt;
 }
 
 sub _columns {
@@ -209,8 +209,8 @@ use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
 BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_req = *Biblio::Folio::BatchFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_opt = *Biblio::Folio::BatchFile::_opt;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_req = *Biblio::Folio::Site::BatchFile::_req;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_opt = *Biblio::Folio::Site::BatchFile::_opt;
 }
 
 sub _columns {
