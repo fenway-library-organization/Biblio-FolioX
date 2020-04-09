@@ -6,21 +6,21 @@ use warnings;
 use POSIX qw(strftime);
 use Clone qw(clone);
 use JSON;
-use Biblio::FolioX::PatronFile;
+use Biblio::Folio::BatchFile;
 
 use vars qw(@ISA);
-@ISA = qw(Biblio::FolioX::PatronFile);
+@ISA = qw(Biblio::Folio::BatchFile);
 
 BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_req = *Biblio::FolioX::PatronFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_opt = *Biblio::FolioX::PatronFile::_opt;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_req = *Biblio::Folio::BatchFile::_req;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_opt = *Biblio::Folio::BatchFile::_opt;
 }
 
 sub new {
     my $cls = shift;
     unshift @_, 'file' if @_ % 2;
     my %arg = @_;
-    my $file = $arg{'file'};
+    my $file = $arg{'file'} // die "no file to parse";
     $cls .= ($file =~ /student/i) ? '::Students' : '::Employees';
     my $self = bless { @_ }, $cls;
     $self->init;
@@ -136,14 +136,14 @@ sub _has_any {
 
 package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students;
 
-use Biblio::FolioX::PatronFile;
+use Biblio::Folio::BatchFile;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
 BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_req = *Biblio::FolioX::PatronFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_opt = *Biblio::FolioX::PatronFile::_opt;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_req = *Biblio::Folio::BatchFile::_req;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_opt = *Biblio::Folio::BatchFile::_opt;
 }
 
 sub _columns {
@@ -209,8 +209,8 @@ use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
 BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_req = *Biblio::FolioX::PatronFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_opt = *Biblio::FolioX::PatronFile::_opt;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_req = *Biblio::Folio::BatchFile::_req;
+    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_opt = *Biblio::Folio::BatchFile::_opt;
 }
 
 sub _columns {
