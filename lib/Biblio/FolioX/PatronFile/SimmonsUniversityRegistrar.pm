@@ -3,10 +3,13 @@ package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar;
 use strict;
 use warnings;
 
+use Biblio::Folio::Object;
+use Biblio::Folio::Site::BatchFile;
+
 use POSIX qw(strftime);
 use Clone qw(clone);
 use JSON;
-use Biblio::Folio::Site::BatchFile;
+use Data::UUID;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::Folio::Site::BatchFile);
@@ -27,14 +30,45 @@ sub new {
     return $self;
 }
 
+sub init {
+    my ($self) = @_;
+    my $ug = Data::UUID->new;
+    $self->{'uuidgen'} = sub {
+        return $ug->create_str;
+    };
+    $self->{'uuidmap'} = $self->{'site'}{'uuidmap'};
+    return $self;
+}
+
+sub _header_mapping {
+    return map { s/^\s+//; split /\s+/ } split /\n/, q(
+        V.FIRST.NAME        first_name
+        V.LAST.NAME         last_name
+        V.MIDDLE.NAME[1,1]  middle_initial
+        V.MIDDLE.NAME       middle_initial
+        X.ADDRESS.PHONE     home_phone
+    );
+}
+
+sub _columns {
+    my ($self, $cols) = @_;
+    return @{ $self->{'columns'} = $cols } if $cols;
+    return @{ $self->{'columns'} || [] };
+}
+
 sub _next {
     my ($self, $fh) = @_;
-    my $line = <$fh>;
-    return if !defined $line;
-    chomp $line;
-    my @row = split /\|/, $line;
-    my $cols = $self->_columns;
-    my $n = @$cols;
+    my @cols = $self->_columns;
+    my ($line, @row);
+    while (1) {
+        $line = <$fh>;
+        $self->{'eof'} = 1, return if !defined $line;
+        chomp $line;
+        @row = split /\|/, $line;
+        last if @cols;
+        @cols = $self->_set_header(@row);
+    }
+    my $n = @cols;
     push @row, '' while @row < $n;
     while (@row > $n) {
         die "data in extra column"
@@ -44,8 +78,19 @@ sub _next {
     my %row = (
         '_raw' => $line,
     );
-    @row{@$cols} = @row;
+    @row{@cols} = @row;
     return $self->_make_user(\%row);
+}
+
+sub _set_header {
+    my ($self, @header) = @_;
+    my $file = $self->file;
+    my %map = $self->_header_mapping;
+    my @mapped_header = map {
+        $map{$_} // die "unrecognized field label in header for file $file: $_"
+    } @header;
+    $self->{'unmapped_columns'} = \@header;
+    return @{ $self->{'columns'} = \@mapped_header };
 }
 
 sub _make_user {
@@ -58,6 +103,7 @@ sub _make_user {
     my $user = {
         # _req('id'         => $self->_uuid),
         _req('_raw'       => $row->{'_raw'}),
+        _req('_parsed'    => $row),
         _req('personal'   => {
             _opt('firstName'   => $row->{'first_name'}),
             _opt('lastName'    => $row->{'last_name'}),
@@ -68,8 +114,8 @@ sub _make_user {
             _opt('dateOfBirth' => undef),
             _opt('enrollmentDate' => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime)),
             _opt('expirationDate' => undef),
+            _req('addresses'  => \@addresses),
         }),
-        _req('addresses'  => \@addresses),
     };
     if (_has_any($row, qw(home_address_1 home_address_2 home_city home_state home_zip_code))) {
         # Home address
@@ -121,6 +167,7 @@ sub _make_user {
 	my ($id_number) = @$row{qw(id_number)};
     $user->{'externalSystemId'} = $id_number if defined $id_number;
     $user->{'patronGroup'} = $self->_patron_group($row);
+    delete $user->{'_parsed'}{'_raw'};
     return $user;
 }
 
@@ -146,29 +193,48 @@ BEGIN {
     *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_opt = *Biblio::Folio::Site::BatchFile::_opt;
 }
 
-sub _columns {
-    return [qw(
-        program
-        class
-        id_number
-        last_name
-        first_name
-        middle_initial
-        home_address_1
-        home_address_2
-        home_city
-        home_state
-        home_zip_code
-        home_phone
-        dorm_room
-        dorm_address
-        dorm_city
-        dorm_state
-        dorm_zip_code
-        university_phone
-        email
-    )];
+sub _header_mapping {
+    my ($self) = @_;
+    return $self->SUPER::_header_mapping, map { s/^\s+//; split /\s+/ } split /\n/, q(
+        V.STPR.ACAD.PROGRAM    program
+        V.STA.CLASS            class
+        V.ID                   id_number
+        XL.ADDRESS.LINES<1,1>  home_address_1
+        XL.ADDRESS.LINES<1,2>  home_address_2
+        X.CITY                 home_city
+        X.STATE                home_state
+        X.ZIP                  home_zip_code
+        X.RMAS.ROOM.BLDG       dorm_room
+        X.RMAS.ADDRESS         dorm_address
+        X.RMAS.CITY            dorm_city
+        X.RMAS.STATE           dorm_state
+        X.RMAS.ZIP             dorm_zip_code
+        X.PERSONAL.CELL.PHONE  university_phone
+        X.EMAIL.ADDRESS        email
+    );
 }
+
+###     return [qw(
+###         program
+###         class
+###         id_number
+###         last_name
+###         first_name
+###         middle_initial
+###         home_address_1
+###         home_address_2
+###         home_city
+###         home_state
+###         home_zip_code
+###         home_phone
+###         dorm_room
+###         dorm_address
+###         dorm_city
+###         dorm_state
+###         dorm_zip_code
+###         university_phone
+###         email
+###     )];
 
 sub _apply_defaults {
     my ($self, $row) = @_;
@@ -205,6 +271,8 @@ sub _patron_group {
 
 package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees;
 
+use Biblio::Folio::Site::BatchFile;
+
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
@@ -213,26 +281,42 @@ BEGIN {
     *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_opt = *Biblio::Folio::Site::BatchFile::_opt;
 }
 
-sub _columns {
-    return [qw(
-        department
-        affiliation
-        id_number
-        last_name
-        first_name
-        middle_initial
-        work_address_1
-        work_address_2
-        extension
-        home_address_1
-        home_address_2
-        home_city
-        home_state
-        home_zip_code
-        home_phone
-        email
-    )];
+sub _header_mapping {
+    my ($self) = @_;
+    return $self->SUPER::_header_mapping, map { s/^\s+//; split /\s+/ } split /\n/, q(
+        X.POS.DEPT                  department
+        X.POS.CLASS.TRANSLATION     affiliation
+        V.HRPER.ID                  id_number
+        V.BLDG.DESC                 work_address_1
+        V.HRP.PRI.CAMPUS.OFFICE     work_address_2
+        V.HRP.PRI.CAMPUS.EXTENSION  extension
+        VL.ADDRESS.LINES<1,1>       home_address_1
+        VL.ADDRESS.LINES<1,2>       home_address_2
+        V.CITY                      home_city
+        V.STATE                     home_state
+        V.ZIP                       home_zip_code
+        X.SIMMONS.EMAIL.ADDRESS     email
+    );
 }
+
+###     return [qw(
+###         department
+###         affiliation
+###         id_number
+###         last_name
+###         first_name
+###         middle_initial
+###         work_address_1
+###         work_address_2
+###         extension
+###         home_address_1
+###         home_address_2
+###         home_city
+###         home_state
+###         home_zip_code
+###         home_phone
+###         email
+###     )];
 
 sub _apply_defaults {
     my ($row);
