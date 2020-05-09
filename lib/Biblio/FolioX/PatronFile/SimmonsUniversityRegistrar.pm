@@ -3,6 +3,7 @@ package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar;
 use strict;
 use warnings;
 
+use Biblio::Folio::Util qw(_req _opt _str2hash);
 use Biblio::Folio::Object;
 use Biblio::Folio::Site::BatchFile;
 
@@ -14,17 +15,23 @@ use Data::UUID;
 use vars qw(@ISA);
 @ISA = qw(Biblio::Folio::Site::BatchFile);
 
-BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_req = *Biblio::Folio::Site::BatchFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::_opt = *Biblio::Folio::Site::BatchFile::_opt;
-}
+my @address_types = qw(Home Campus);  # SLIS West is special
+my @address_parts = qw(addressLine1 addressLine2 city region postalCode);
+my @personal_parts = qw(firstName middleName lastName email phone mobilePhone);
 
 sub new {
     my $cls = shift;
     unshift @_, 'file' if @_ % 2;
     my %arg = @_;
     my $file = $arg{'file'} // die "no file to parse";
-    $cls .= ($file =~ /student/i) ? '::Students' : '::Employees';
+    if ($file =~ /employee/i) {
+        $cls .= '::Employees';
+    }
+    else {
+        print STDERR "warning: unrecognized file name, assumed to be a student load: $file"
+            if $file !~ /student/i;
+        $cls .= '::Students';
+    }
     my $self = bless { @_ }, $cls;
     $self->init;
     return $self;
@@ -41,13 +48,38 @@ sub init {
 }
 
 sub _header_mapping {
-    return map { s/^\s+//; split /\s+/ } split /\n/, q(
-        V.FIRST.NAME        first_name
-        V.LAST.NAME         last_name
-        V.MIDDLE.NAME[1,1]  middle_initial
-        V.MIDDLE.NAME       middle_initial
-        X.ADDRESS.PHONE     home_phone
-    );
+    return _str2hash(q{
+        First_Name              personal.firstName
+        Middle_Name             personal.middleName
+        Last_Name               personal.lastName
+        Email_Address           personal.email
+        Pref_Address_Phone      personal.phone
+        Personal_Cell_Phone     personal.mobilePhone
+        User_Name               username
+        Simmons_Id              externalSystemId
+        active                  active
+        ANT_CMPL_Date           expirationDate
+        Patron_Group            patronGroup
+        Pref_Address_Line_1     homeAddress.addressLine1
+        Pref_Address_Line_2     homeAddress.addressLine2
+        Pref_City               homeAddress.city
+        Pref_ST                 homeAddress.region
+        Pref_Zip                homeAddress.postalCode
+        Dorm_Room               campusAddress.addressLine1.0.Room
+        Dorm_BLDG               campusAddress.addressLine1.1.Building
+        Dorm_Address_Line1      campusAddress.addressLine1.2.Remainder
+        Dorm_Addressv_Line2     campusAddress.addressLine2
+        Dorm_City               campusAddress.city
+        Dorm_State              campusAddress.region
+        Dorm_Zip                campusAddress.postalCode
+        Start_Date              enrollmentDate
+        # Old field names:
+        # V.FIRST.NAME        first_name
+        # V.LAST.NAME         last_name
+        # V.MIDDLE.NAME[1,1]  middle_initial
+        # V.MIDDLE.NAME       middle_initial
+        # X.ADDRESS.PHONE     home_phone
+    });
 }
 
 sub _columns {
@@ -96,81 +128,100 @@ sub _set_header {
 sub _make_user {
     my ($self, $row) = @_;
     $self->_apply_defaults($row);
-    my $uuidmap = $self->{'uuidmap'}{'addressType'}
-        or die "no UUID map";
     my @addresses;
-    my ($home, $campus) = @$uuidmap{qw(Home Campus)};
     my $user = {
         # _req('id'         => $self->_uuid),
         _req('_raw'       => $row->{'_raw'}),
         _req('_parsed'    => $row),
+        _opt('enrollmentDate' => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime)),
+        _opt('expirationDate' => $row->{'expirationDate'}),
         _req('personal'   => {
-            _opt('firstName'   => $row->{'first_name'}),
-            _opt('lastName'    => $row->{'last_name'}),
-            _opt('middleName'  => $row->{'middle_initial'}),
-            _opt('email'       => $row->{'email'}),
-            _opt('phone'       => $row->{'home_phone'}),
-            _opt('mobilePhone' => $row->{'university_phone'}),  # XXX Wrong!
+            (map { _opt($_) => $row->{"personal.$_"} } @personal_parts),
             _opt('dateOfBirth' => undef),
-            _opt('enrollmentDate' => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime)),
-            _opt('expirationDate' => undef),
             _req('addresses'  => \@addresses),
         }),
     };
-    if (_has_any($row, qw(home_address_1 home_address_2 home_city home_state home_zip_code))) {
-        # Home address
-        push @addresses, {
-            # _req('id'           => $self->_uuid),
-            _req('addressTypeId' => $home),
-            _opt('addressLine1' => $row->{'home_address_1'}),
-            _opt('addressLine2' => $row->{'home_address_2'}),
-            _opt('city'         => $row->{'home_city'}),
-            _opt('region'       => $row->{'home_state'}),
-            _opt('postalCode'   => $row->{'home_zip_code'}),
-            _opt('countryId'    => 'US'),
-        };
-    }
-    if (_has_any($row, qw(dorm_room dorm_address dorm_city dorm_state dorm_zip_code))) {
-        my %defaults = (
-            'dorm_address'  => '255 Brookline Avenue',
-            'dorm_city'     => 'Boston',
-            'dorm_state'    => 'MA',
-            'dorm_zip_code' => '02215',
-            'countryId'     => 'US',
-        );
-        push @addresses, {
-            %defaults,
-            # _req('id'           => $self->_uuid),
-            _req('addressTypeId' => $campus),
-            _opt('addressLine1' => $row->{'dorm_room'}),
-            _opt('addressLine2' => $row->{'dorm_address'}),
-            _opt('city'         => $row->{'dorm_city'}),
-            _opt('region'       => $row->{'dorm_state'}),
-            _opt('postalCode'   => $row->{'dorm_zip_code'}),
-        };
-    }
-    if (_has_any($row, qw(work_address_1 work_address_2))) {
-        push @addresses, {
-            # _req('id'           => $self->_uuid),
-            _req('addressTypeId' => $campus),
-            _opt('addressLine1' => $row->{'work_address_1'}),
-            _opt('addressLine2' => $row->{'work_address_2'}),
-            _opt('city'         => $row->{'work_city'} || 'Boston'),
-            _opt('region'       => $row->{'work_state'} || 'MA'),
-            _opt('postalCode'   => $row->{'work_zip_code'} || '02215'),
-            _opt('countryId'    => 'US'),
-        };
-    }
-    if (@addresses) {
-        $addresses[0]{'primaryAddress'} = JSON::true;
-    }
-	my ($id_number) = @$row{qw(id_number)};
+    @addresses = grep { defined } map { $self->_make_address($_, $row) } @address_types;
+    $addresses[0]{'primaryAddress'} = JSON::true if @addresses;
+    my ($id_number) = @$row{qw(id_number)};
     $user->{'externalSystemId'} = $id_number if defined $id_number;
     $user->{'patronGroup'} = $self->_patron_group($row);
-    delete $user->{'_parsed'}{'_raw'};
+    #delete $user->{'_parsed'}{'_raw'};
     return $user;
 }
 
+sub _make_address {
+    my ($self, $type, $row) = @_;
+    my %addr;
+    my $empty = 1;
+    foreach my $part (@address_parts) {
+        my $key = lc($type) . 'Address.' . $part;
+        my @subkeys = grep { /^$key\..+$/ } keys %$row;
+        my $val = $row->{$key};
+        if (@subkeys) {
+            die "$type address has both key $key and subkeys ", join(', ', @subkeys)
+                if defined $val;
+            my @vals = @$row{sort @subkeys};
+            $val = join(' ', grep { defined } @vals);
+        }
+        if (defined $val) {
+            $empty = 0 if $val =~ /\S/;
+            $addr{$key} = $val;
+        }
+    }
+    return if $empty;
+    my $uuidmap = $self->{'uuidmap'}{'addressType'}
+        or die "no UUID map";
+    my ($home, $campus) = @$uuidmap{qw(Home Campus)};
+    $addr{'addressTypeId'} = 
+    return \%addr;
+}
+
+#    if (_has_any($row, qw(home_address_1 home_address_2 home_city home_state home_zip_code))) {
+#        # Home address
+#        push @addresses, {
+#            # _req('id'           => $self->_uuid),
+#            _req('addressTypeId' => $home),
+#            _opt('addressLine1' => $row->{'home_address_1'}),
+#            _opt('addressLine2' => $row->{'home_address_2'}),
+#            _opt('city'         => $row->{'home_city'}),
+#            _opt('region'       => $row->{'home_state'}),
+#            _opt('postalCode'   => $row->{'home_zip_code'}),
+#            _opt('countryId'    => 'US'),
+#        };
+#    }
+#    if (_has_any($row, qw(dorm_room dorm_address dorm_city dorm_state dorm_zip_code))) {
+#        my %defaults = (
+#            'dorm_address'  => '255 Brookline Avenue',
+#            'dorm_city'     => 'Boston',
+#            'dorm_state'    => 'MA',
+#            'dorm_zip_code' => '02215',
+#            'countryId'     => 'US',
+#        );
+#        push @addresses, {
+#            %defaults,
+#            # _req('id'           => $self->_uuid),
+#            _req('addressTypeId' => $campus),
+#            _opt('addressLine1' => $row->{'dorm_room'}),
+#            _opt('addressLine2' => $row->{'dorm_address'}),
+#            _opt('city'         => $row->{'dorm_city'}),
+#            _opt('region'       => $row->{'dorm_state'}),
+#            _opt('postalCode'   => $row->{'dorm_zip_code'}),
+#        };
+#    }
+#    if (_has_any($row, qw(work_address_1 work_address_2))) {
+#        push @addresses, {
+#            # _req('id'           => $self->_uuid),
+#            _req('addressTypeId' => $campus),
+#            _opt('addressLine1' => $row->{'work_address_1'}),
+#            _opt('addressLine2' => $row->{'work_address_2'}),
+#            _opt('city'         => $row->{'work_city'} || 'Boston'),
+#            _opt('region'       => $row->{'work_state'} || 'MA'),
+#            _opt('postalCode'   => $row->{'work_zip_code'} || '02215'),
+#            _opt('countryId'    => 'US'),
+#        };
+#    }
+#
 sub _has_any {
     my $row = shift;
     foreach my $val (@$row{@_}) {
@@ -181,37 +232,39 @@ sub _has_any {
 
 # ------------------------------------------------------------------------------
 
-package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students;
+package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students; 
 
-use Biblio::Folio::Site::BatchFile;
+#use Biblio::Folio::Site::BatchFile;
+use Biblio::Folio::Util qw(_req _opt _str2hash);
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
-BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_req = *Biblio::Folio::Site::BatchFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students::_opt = *Biblio::Folio::Site::BatchFile::_opt;
-}
-
 sub _header_mapping {
     my ($self) = @_;
-    return $self->SUPER::_header_mapping, map { s/^\s+//; split /\s+/ } split /\n/, q(
-        V.STPR.ACAD.PROGRAM    program
-        V.STA.CLASS            class
-        V.ID                   id_number
-        XL.ADDRESS.LINES<1,1>  home_address_1
-        XL.ADDRESS.LINES<1,2>  home_address_2
-        X.CITY                 home_city
-        X.STATE                home_state
-        X.ZIP                  home_zip_code
-        X.RMAS.ROOM.BLDG       dorm_room
-        X.RMAS.ADDRESS         dorm_address
-        X.RMAS.CITY            dorm_city
-        X.RMAS.STATE           dorm_state
-        X.RMAS.ZIP             dorm_zip_code
-        X.PERSONAL.CELL.PHONE  university_phone
-        X.EMAIL.ADDRESS        email
-    );
+    return $self->SUPER::_header_mapping, _str2hash(qw{
+        # ---------------------------------------------------------
+        # Unused fields:
+        # Personal_Address_Type   Preferred
+        # Dorm_Address            Dorm_Address
+        # ---------------------------------------------------------
+        # Old field names:
+        # V.STPR.ACAD.PROGRAM    program
+        # V.STA.CLASS            class
+        # V.ID                   id_number
+        # XL.ADDRESS.LINES<1,1>  home_address_1
+        # XL.ADDRESS.LINES<1,2>  home_address_2
+        # X.CITY                 home_city
+        # X.STATE                home_state
+        # X.ZIP                  home_zip_code
+        # X.RMAS.ROOM.BLDG       dorm_room
+        # X.RMAS.ADDRESS         dorm_address
+        # X.RMAS.CITY            dorm_city
+        # X.RMAS.STATE           dorm_state
+        # X.RMAS.ZIP             dorm_zip_code
+        # X.PERSONAL.CELL.PHONE  university_phone
+        # X.EMAIL.ADDRESS        email
+    });
 }
 
 ###     return [qw(
@@ -271,32 +324,30 @@ sub _patron_group {
 
 package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees;
 
-use Biblio::Folio::Site::BatchFile;
+#use Biblio::Folio::Site::BatchFile;
+use Biblio::Folio::Util qw(_req _opt _str2hash);
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
-BEGIN {
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_req = *Biblio::Folio::Site::BatchFile::_req;
-    *Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees::_opt = *Biblio::Folio::Site::BatchFile::_opt;
-}
-
 sub _header_mapping {
     my ($self) = @_;
-    return $self->SUPER::_header_mapping, map { s/^\s+//; split /\s+/ } split /\n/, q(
-        X.POS.DEPT                  department
-        X.POS.CLASS.TRANSLATION     affiliation
-        V.HRPER.ID                  id_number
-        V.BLDG.DESC                 work_address_1
-        V.HRP.PRI.CAMPUS.OFFICE     work_address_2
-        V.HRP.PRI.CAMPUS.EXTENSION  extension
-        VL.ADDRESS.LINES<1,1>       home_address_1
-        VL.ADDRESS.LINES<1,2>       home_address_2
-        V.CITY                      home_city
-        V.STATE                     home_state
-        V.ZIP                       home_zip_code
-        X.SIMMONS.EMAIL.ADDRESS     email
-    );
+    return $self->SUPER::_header_mapping, _str2hash(q{
+        # ---------------------------------------------------------
+        # Old field names:
+        # X.POS.DEPT                  department
+        # X.POS.CLASS.TRANSLATION     affiliation
+        # V.HRPER.ID                  id_number
+        # V.BLDG.DESC                 work_address_1
+        # V.HRP.PRI.CAMPUS.OFFICE     work_address_2
+        # V.HRP.PRI.CAMPUS.EXTENSION  extension
+        # VL.ADDRESS.LINES<1,1>       home_address_1
+        # VL.ADDRESS.LINES<1,2>       home_address_2
+        # V.CITY                      home_city
+        # V.STATE                     home_state
+        # V.ZIP                       home_zip_code
+        # X.SIMMONS.EMAIL.ADDRESS     email
+    });
 }
 
 ###     return [qw(
@@ -336,3 +387,5 @@ sub _patron_group {
 }
 
 1;
+
+# vim:set et ts=4 cin si:
