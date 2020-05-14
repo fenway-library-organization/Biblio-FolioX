@@ -9,15 +9,16 @@ use vars qw(@ISA);
 @ISA = qw(Biblio::Folio::Site::BatchLoader);
 
 sub _prepare_update {
-    my ($self, $item) = @_;
-    my ($object, $record) = @$item{qw(object record)};
+    my ($self, $member) = @_;
+    my ($object, $record) = @$member{qw(object record)};
     # Update $object from $record
-    my @oaddr = sort {
-        0
-    } @{ $object->{'personal'}{'addresses'} };
+    my %oaddr = map { $_->{'addressTypeId'} => $_ } @{ $object->{'personal'}{'addresses'} };
+    my %raddr = map { $_->{'addressTypeId'} => $_ } @{ $record->{'personal'}{'addresses'} };
+
+    my @oaddr = sort { xxx } values %oaddr;
     $object->{'personal'}{'addresses'} = \@oaddr;
     my %update;
-    $item->{'update'} = \%update;
+    $member->{'update'} = \%update;
 }
 
 1;

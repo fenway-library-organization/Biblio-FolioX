@@ -3,14 +3,13 @@ package Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar;
 use strict;
 use warnings;
 
-use Biblio::Folio::Util qw(_req _opt _str2hash);
+use Biblio::Folio::Util qw(_req _opt _str2hash _bool _utc_datetime _debug);
 use Biblio::Folio::Object;
 use Biblio::Folio::Site::BatchFile;
 
 use POSIX qw(strftime);
 use Clone qw(clone);
 use JSON;
-use Data::UUID;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::Folio::Site::BatchFile);
@@ -28,7 +27,7 @@ sub new {
         $cls .= '::Employees';
     }
     else {
-        print STDERR "warning: unrecognized file name, assumed to be a student load: $file"
+        print STDERR "warning: unrecognized file name, assumed to be a student load: $file\n"
             if $file !~ /student/i;
         $cls .= '::Students';
     }
@@ -37,17 +36,35 @@ sub new {
     return $self;
 }
 
+sub site { @_ > 1 ? $_[0]{'site'} = $_[1] : $_[0]{'site'} }
+
 sub init {
     my ($self) = @_;
     my $ug = Data::UUID->new;
     $self->{'uuidgen'} = sub {
         return $ug->create_str;
     };
-    $self->{'uuidmap'} = $self->{'site'}{'uuidmap'};
+    my $site = $self->site;
+    $self->{'address_types'} = { map { $_->{'addressType'} => $_ } $site->address_types };
+    $self->{'patron_groups'} = { map { $_->{'group'} => $_ } $site->groups };
+    my $t0 = time;
+    $self->{'today'} = _utc_datetime(gmtime($t0));
+    $self->{'default_expiration_date'} = _utc_datetime(gmtime($t0+86400*30));
+    # $self->{'uuidmap'} = $site->{'uuidmap'};
     return $self;
 }
 
-sub _header_mapping {
+sub address_type_id {
+    my ($self, $type) = @_;
+    return $self->{'address_types'}{$type}{'id'};
+}
+
+sub patron_group_id {
+    my ($self, $group) = @_;
+    return $self->{'patron_groups'}{$group}{'id'};
+}
+
+sub header_mapping {
     return _str2hash(q{
         First_Name              personal.firstName
         Middle_Name             personal.middleName
@@ -73,6 +90,9 @@ sub _header_mapping {
         Dorm_State              campusAddress.region
         Dorm_Zip                campusAddress.postalCode
         Start_Date              enrollmentDate
+        # Fields to ignore:
+		Personal_Address_Type   -
+		Dorm_Address			-
         # Old field names:
         # V.FIRST.NAME        first_name
         # V.LAST.NAME         last_name
@@ -82,23 +102,24 @@ sub _header_mapping {
     });
 }
 
-sub _columns {
+sub columns {
     my ($self, $cols) = @_;
     return @{ $self->{'columns'} = $cols } if $cols;
     return @{ $self->{'columns'} || [] };
 }
 
-sub _next {
+sub next {
     my ($self, $fh) = @_;
-    my @cols = $self->_columns;
+    my @cols = $self->columns;
     my ($line, @row);
     while (1) {
         $line = <$fh>;
         $self->{'eof'} = 1, return if !defined $line;
         chomp $line;
+        $line =~ s/\r$//;
         @row = split /\|/, $line;
         last if @cols;
-        @cols = $self->_set_header(@row);
+        @cols = $self->set_header(@row);
     }
     my $n = @cols;
     push @row, '' while @row < $n;
@@ -109,15 +130,19 @@ sub _next {
     }
     my %row = (
         '_raw' => $line,
+        '_lno' => $.,
     );
     @row{@cols} = @row;
-    return $self->_make_user(\%row);
+	delete $row{'-'};  # Any ignored fields
+    my $l = $. - 2;
+    _debug("[$l] username=$row{username} <= $line");
+    return $self->make_user(\%row);
 }
 
-sub _set_header {
+sub set_header {
     my ($self, @header) = @_;
     my $file = $self->file;
-    my %map = $self->_header_mapping;
+    my %map = $self->header_mapping;
     my @mapped_header = map {
         $map{$_} // die "unrecognized field label in header for file $file: $_"
     } @header;
@@ -125,32 +150,61 @@ sub _set_header {
     return @{ $self->{'columns'} = \@mapped_header };
 }
 
-sub _make_user {
+sub make_user {
     my ($self, $row) = @_;
-    $self->_apply_defaults($row);
-    my @addresses;
+    _debug('>> ' . __PACKAGE__ . '::make_user(username=' . $row->{'username'} . ')');
+    $self->apply_defaults($row);
+    my $personal = $self->make_personal($row);
     my $user = {
-        # _req('id'         => $self->_uuid),
-        _req('_raw'       => $row->{'_raw'}),
-        _req('_parsed'    => $row),
-        _opt('enrollmentDate' => strftime('%Y-%m-%dT%H:%M:%SZ', gmtime)),
-        _opt('expirationDate' => $row->{'expirationDate'}),
-        _req('personal'   => {
-            (map { _opt($_) => $row->{"personal.$_"} } @personal_parts),
-            _opt('dateOfBirth' => undef),
-            _req('addresses'  => \@addresses),
-        }),
+        # _req('id'         => _uuid),
+        _req('_raw'    => $row->{'_raw'}),
+        _req('_parsed' => $row),
+		_req('active' 		    => _bool($row->{'active'})),
+        _req('patronGroup'      => $self->patron_group_id($row->{'patronGroup'})),
+        _req('personal'         => $personal),
+        _opt('externalSystemId' => $row->{'externalSystemId'}),
+        _opt('username'         => $row->{'username'}),
+        _opt('enrollmentDate'   => _datetime($row->{'enrollmentDate'}, $self->{'today'})),
+        _opt('expirationDate'   => _datetime($row->{'expirationDate'}, $self->{'default_expiration_date'})),
     };
-    @addresses = grep { defined } map { $self->_make_address($_, $row) } @address_types;
-    $addresses[0]{'primaryAddress'} = JSON::true if @addresses;
-    my ($id_number) = @$row{qw(id_number)};
-    $user->{'externalSystemId'} = $id_number if defined $id_number;
-    $user->{'patronGroup'} = $self->_patron_group($row);
-    #delete $user->{'_parsed'}{'_raw'};
+    _debug('<< ' . __PACKAGE__ . '::make_user(username=' . $user->{'username'} . ')');
     return $user;
 }
 
-sub _make_address {
+sub _datetime {
+    my ($str, $default) = @_;
+    return $default if !defined $str;
+    return _utc_datetime("$3-$1-$2") if $str =~ m{^([0-9]{2})[-/_]([0-9]{2})[-/_]([0-9]{4})$};
+    return _utc_datetime($str) if $str =~ m{^([0-9]{4})[-/_]?([0-9]{2})[-/_]?([0-9]{2})(?:$|T)};
+    return $default if defined $default;
+    _debug("bad date/time: $str");
+    die "bad date/time: $str";
+}
+
+sub apply_defaults {
+    # Nothing special to do
+}
+
+sub make_personal {
+    my ($self, $row) = @_;
+    my @addresses;
+    my $personal = {
+        (map { _opt($_ => $row->{"personal.$_"}) } @personal_parts),
+        _opt('dateOfBirth' => undef),
+        _req('addresses'  => \@addresses),
+    };
+    if (!$personal->{'lastName'}) {
+        # TODO complain or die?
+        $personal->{'lastName'} = '[none]';
+    }
+    @addresses = grep { defined }
+                 map { $self->make_address($_, $row) } @address_types;
+    $addresses[0]{'primaryAddress'} = JSON::true if @addresses;
+    delete $personal->{''};
+    return $personal;
+}
+
+sub make_address {
     my ($self, $type, $row) = @_;
     my %addr;
     my $empty = 1;
@@ -159,28 +213,25 @@ sub _make_address {
         my @subkeys = grep { /^$key\..+$/ } keys %$row;
         my $val = $row->{$key};
         if (@subkeys) {
-            die "$type address has both key $key and subkeys ", join(', ', @subkeys)
+            print STDERR "warning: $type address has both key $key and subkeys ", join(', ', @subkeys), "\n"
                 if defined $val;
             my @vals = @$row{sort @subkeys};
-            $val = join(' ', grep { defined } @vals);
+            $val = join(' ', grep { defined } $val, @vals);
         }
         if (defined $val) {
             $empty = 0 if $val =~ /\S/;
-            $addr{$key} = $val;
+            $addr{$part} = $val;
         }
     }
     return if $empty;
-    my $uuidmap = $self->{'uuidmap'}{'addressType'}
-        or die "no UUID map";
-    my ($home, $campus) = @$uuidmap{qw(Home Campus)};
-    $addr{'addressTypeId'} = 
+    $addr{'addressTypeId'} = $self->address_type_id($type);
     return \%addr;
 }
 
 #    if (_has_any($row, qw(home_address_1 home_address_2 home_city home_state home_zip_code))) {
 #        # Home address
 #        push @addresses, {
-#            # _req('id'           => $self->_uuid),
+#            # _req('id'           => _uuid),
 #            _req('addressTypeId' => $home),
 #            _opt('addressLine1' => $row->{'home_address_1'}),
 #            _opt('addressLine2' => $row->{'home_address_2'}),
@@ -200,7 +251,7 @@ sub _make_address {
 #        );
 #        push @addresses, {
 #            %defaults,
-#            # _req('id'           => $self->_uuid),
+#            # _req('id'           => _uuid),
 #            _req('addressTypeId' => $campus),
 #            _opt('addressLine1' => $row->{'dorm_room'}),
 #            _opt('addressLine2' => $row->{'dorm_address'}),
@@ -211,7 +262,7 @@ sub _make_address {
 #    }
 #    if (_has_any($row, qw(work_address_1 work_address_2))) {
 #        push @addresses, {
-#            # _req('id'           => $self->_uuid),
+#            # _req('id'           => _uuid),
 #            _req('addressTypeId' => $campus),
 #            _opt('addressLine1' => $row->{'work_address_1'}),
 #            _opt('addressLine2' => $row->{'work_address_2'}),
@@ -240,9 +291,9 @@ use Biblio::Folio::Util qw(_req _opt _str2hash);
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
-sub _header_mapping {
+sub header_mapping {
     my ($self) = @_;
-    return $self->SUPER::_header_mapping, _str2hash(qw{
+    return $self->SUPER::header_mapping, _str2hash(q{
         # ---------------------------------------------------------
         # Unused fields:
         # Personal_Address_Type   Preferred
@@ -289,36 +340,36 @@ sub _header_mapping {
 ###         email
 ###     )];
 
-sub _apply_defaults {
-    my ($self, $row) = @_;
-    my %def = (
-        dorm_address  => '255 Brookline Avenue',
-        dorm_city     => 'Boston',
-        dorm_state    => 'MA',
-        dorm_zip_code => '02215',
-    );
-    while (my ($k, $v) = each %def) {
-        my $v2 = $row->{$k};
-        return if defined $v2 && length $v2;
-    }
-    $row->{$_} = $def{$_} for keys %def;
-}
+### sub _apply_defaults {
+###     my ($self, $row) = @_;
+###     my %def = (
+###         dorm_address  => '255 Brookline Avenue',
+###         dorm_city     => 'Boston',
+###         dorm_state    => 'MA',
+###         dorm_zip_code => '02215',
+###     );
+###     while (my ($k, $v) = each %def) {
+###         my $v2 = $row->{$k};
+###         return if defined $v2 && length $v2;
+###     }
+###     $row->{$_} = $def{$_} for keys %def;
+### }
 
-sub _patron_group {
-    my ($self, $row) = @_;
-    my ($k1, $k2) = @$row{qw(program class)};
-    $k1 =~ s/.+\.(?=OL$)//     # All *.OL programs => OL
-        or
-    $k1 =~ s/^PH\.D\..*/PH.D/  # All PH.D.* classes => PH.D
-        ;
-    my $uuidmap = $self->{'uuidmap'}{'patronGroup'}
-        or die "no UUID map";
-    foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
-        my $v = $uuidmap->{$_};
-        return $v if defined $v;
-    }
-    die "no patron group: program=$k1, class=$k2";
-}
+### sub patron_group {
+###     my ($self, $row) = @_;
+###     my ($k1, $k2) = @$row{qw(program class)};
+###     $k1 =~ s/.+\.(?=OL$)//     # All *.OL programs => OL
+###         or
+###     $k1 =~ s/^PH\.D\..*/PH.D/  # All PH.D.* classes => PH.D
+###         ;
+###     my $uuidmap = $self->{'uuidmap'}{'patronGroup'}
+###         or die "no UUID map";
+###     foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
+###         my $v = $uuidmap->{$_};
+###         return $v if defined $v;
+###     }
+###     die "no patron group: program=$k1, class=$k2";
+### }
 
 # ------------------------------------------------------------------------------
 
@@ -330,9 +381,9 @@ use Biblio::Folio::Util qw(_req _opt _str2hash);
 use vars qw(@ISA);
 @ISA = qw(Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar);
 
-sub _header_mapping {
+sub header_mapping {
     my ($self) = @_;
-    return $self->SUPER::_header_mapping, _str2hash(q{
+    return $self->SUPER::header_mapping, _str2hash(q{
         # ---------------------------------------------------------
         # Old field names:
         # X.POS.DEPT                  department
@@ -369,22 +420,22 @@ sub _header_mapping {
 ###         email
 ###     )];
 
-sub _apply_defaults {
-    my ($row);
-    # There aren't any!
-}
+### sub _apply_defaults {
+###     my ($row);
+###     # There aren't any!
+### }
 
-sub _patron_group {
-    my ($self, $row) = @_;
-    my ($k1, $k2) = @$row{qw(department affiliation)};
-    my $uuidmap = $self->{'uuidmap'}{'patronGroup'}
-        or die "no UUID map";
-    foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
-        my $v = $uuidmap->{$_};
-        return $v if defined $v;
-    }
-    die "no patron group: department=$k1, affiliation=$k2";
-}
+### sub patron_group {
+###     my ($self, $row) = @_;
+###     my ($k1, $k2) = @$row{qw(department affiliation)};
+###     my $uuidmap = $self->{'uuidmap'}{'patronGroup'}
+###         or die "no UUID map";
+###     foreach ("$k1:$k2", "$k1:*", "*:$k2", "*:*") {
+###         my $v = $uuidmap->{$_};
+###         return $v if defined $v;
+###     }
+###     die "no patron group: department=$k1, affiliation=$k2";
+### }
 
 1;
 

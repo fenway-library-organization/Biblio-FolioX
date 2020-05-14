@@ -4,15 +4,10 @@ use strict;
 use warnings;
 
 use POSIX qw(strftime);
-use Data::UUID;
 
 sub init {
     my ($self) = @_;
-    my $ug = Data::UUID->new;
-    $self->{'uuidgen'} = sub {
-        return $ug->create_str;
-    };
-    $self->{'uuidmap'} = $self->{'site'}{'uuidmap'};
+    # $self->{'uuidmap'} = $self->{'site'}{'uuidmap'};
     return $self;
 }
 
@@ -23,16 +18,6 @@ sub _open {
     binmode $fh
         or die "binmode $file: $!";
     return $fh;
-}
-
-sub _uuid {
-    my ($self, $obj) = @_;
-    return $obj->{'id'}
-        if defined $obj
-        && defined $obj->{'id'};
-    my $uuid = $self->{'uuidgen'}->();
-    $obj->{'id'} = $uuid if defined $obj;
-    return $uuid;
 }
 
 sub run_hooks {
@@ -60,9 +45,8 @@ sub iterate {
     elsif (@_ == 1) {
         $arg{'each'} = shift @_;
     }
-    my $each = $arg{'each'} || die "no callback";
-    my ($first, $before, $after, $last) = @arg{qw(first before after last)};
-    my $error = $arg{'error'};
+    my ($first, $before, $each, $error, $after, $last) = @arg{qw(first before each error after last)};
+    die "no callback" if !$each;
     my $batch_size = $arg{'batch_size'} || 1;
     my $file = $arg{'file'} || $self->{'file'}
         or die "no file to iterate over";
@@ -74,7 +58,7 @@ sub iterate {
         while (1) {
             my ($user, $ok, $err);
             eval {
-                $user = $self->_next($fh);
+                $user = $self->next($fh);
                 ($ok, $err) = (1);
             };
             if (defined $user) {
