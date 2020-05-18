@@ -3,6 +3,7 @@ package Biblio::FolioX::PatronFile;
 use strict;
 use warnings;
 
+use JSON;
 use POSIX qw(strftime);
 
 sub init {
@@ -106,8 +107,7 @@ sub _default_user {
         'username' => undef,
         'externalSystemId' => undef,
         'barcode' => undef,
-        'active' => 1,
-        'type' => undef,
+        'active' => JSON::true,
         'patronGroup' => undef,
         'enrollmentDate' => undef,
         'expirationDate' => undef,
