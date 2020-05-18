@@ -1,0 +1,6 @@
+* Move code from Biblio::FolioX::PatronFile into Biblio::Folio::Site::BatchFile
+
+* Break into two separate distributions:
+
+    * Biblio-FolioX-SimmonsUniversity
+    * Biblio-FolioX-Voyager

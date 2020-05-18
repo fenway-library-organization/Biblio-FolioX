@@ -1,0 +1,27 @@
+Biblio::FolioX is a Perl module namespace in which to put site-specific or
+other non-core modules for use with Biblio::Folio.
+
+Currently, the only modules here are:
+
+Biblio::FolioX::PatronFile
+
+    Generic code for parsing patron data files.  Almost all of this code
+    applies to any import file containing delimited fields (one record per
+    line, first line contains field names) and should be moved into
+    Biblio::Folio::Site::BatchFile.
+
+Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar
+Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Students
+Biblio::FolioX::PatronFile::SimmonsUniversityRegistrar::Employees
+
+    Parse patron files from the Simmons University registrar.
+
+Biblio::FolioX::PatronFile::Voyager
+
+    Non-functional code for parsing Voyager patron SIF files.
+
+Biblio::FolioX::BatchLoader::User::SimmonsUniversityRegistrar
+
+    Prepare Simmons University user data for loading by
+    Biblio::Folio::Site::BatchLoader.
+
