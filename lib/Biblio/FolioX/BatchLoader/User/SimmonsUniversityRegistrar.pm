@@ -48,6 +48,13 @@ my %address_type = (
 my %address_type_order = (
     map { $_->{'_category'} => $_->{'_order'} } @address_type_config
 );
+my %contact_type_id = (
+    'Mail' => '001',
+    'Email' => '002',
+    'Text message' => '003',
+    'Phone' => '004',
+    'Mobile phone' => '005',
+);
 
 sub init {
     my ($self) = @_;
@@ -100,7 +107,15 @@ sub _sort_addresses {
 sub _prepare_create {
     my ($self, $member) = @_;
     my $record = $member->{'create'} = _unbless($member->{'record'});
-    $record->{'personal'}{'addresses'} = [ $self->_sort_addresses(@{ $record->{'personal'}{'addresses'} || [] }) ];
+    my $personal = $record->{'personal'};
+    my @addresses = @{ $personal->{'addresses'} || [] };
+    $personal->{'addresses'} = [ $self->_sort_addresses(@addresses) ];
+    if (defined $personal->{'email'} && $personal->{'email'} =~ /[@]/) {
+        $personal->{'preferredContactTypeId'} = $contact_type_id{'Email'};
+    }
+    else {
+        $personal->{'preferredContactTypeId'} = $contact_type_id{'Mail'};
+    }
 }
 
 sub _prepare_update {
@@ -157,11 +172,13 @@ sub _update_fields {
         elsif (!defined $sval) {
             # Nothing to do
         }
-        elsif (!defined $dval && $sval ne '') {
-            push @$changes, ['set', $pfx.$k, $sval];
-            $destination->{$k} = $sval;
+        elsif (!defined $dval) {
+            if ($sval ne '') {
+                push @$changes, ['set', $pfx.$k, $sval];
+                $destination->{$k} = $sval;
+            }
         }
-        elsif ($sval eq '') {
+        elsif ($sval eq '' && $dval ne '') {
             push @$changes, ['unset', $pfx.$k, $dval];
             $destination->{$k} = $sval;
         }
@@ -213,29 +230,33 @@ sub _prepare_update_addresses {
         my $daddr = $daddr{$ati};
         my $saddr = $saddr{$ati};
         if ($daddr && !$saddr) {
+            # Address in the existing user in FOLIO is of a type not found in the patron file being loaded
             push @daddr_new, $daddr;
-            push @$changes, ['keep', $pfx, scalar(@daddr_new)];
+            push @$changes, ['keep', $pfx.scalar(@daddr_new)];
         }
         elsif ($saddr && !$daddr) {
+            # Address in the patron file being loaded is of a type not found in the existing user in FOLIO
             push @daddr_new, $saddr;
-            push @$changes, ['add', $pfx, scalar(@daddr_new)];
+            push @$changes, ['add', $pfx.scalar(@daddr_new)];
         }
         elsif ($saddr && $daddr) {
+            # The address type is found in both -- the record being loaded "wins"
+            # unless the address type is designated "protected" in the load profile
             if ($daddr->{'_protect'}) {
-                push @$changes, ['protected', $pfx];
+                push @$changes, ['protected', $pfx.scalar(@daddr_new)];
             }
             else {
-                push @daddr_new, $saddr;
-                my $i = scalar @$changes;
+                #my $i = scalar @$changes;
                 $self->_update_fields(
                     'member' => $member,
                     'source' => $saddr,
                     'destination' => $daddr,
                     'prefix' => $pfx,
                 );
-                if (scalar @$changes > $i) {
-                    splice @$changes, $i, 0, ['update', $pfx];
-                }
+                push @daddr_new, $daddr;
+                #if (scalar @$changes > $i) {
+                #    splice @$changes, $i, 0, ['update', $pfx];
+                #}
             }
         }
         1;

@@ -10,6 +10,7 @@ use Biblio::Folio::Site::BatchFile;
 use POSIX qw(strftime);
 use Clone qw(clone);
 use JSON;
+use Text::CSV;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::Folio::Site::BatchFile);
@@ -22,8 +23,11 @@ sub new {
     my $cls = shift;
     unshift @_, 'file' if @_ % 2;
     my %arg = @_;
-    my $file = $arg{'file'} // die "no file to parse";
-    if ($file =~ /employee/i) {
+    my $file = $arg{'file'};
+    if (!defined $file) {
+        # We're going to be asked to do something that isn't file-dependent
+    }
+    elsif ($file =~ /employee/i) {
         $cls .= '::Employees';
     }
     else {
@@ -37,6 +41,8 @@ sub new {
 }
 
 sub site { @_ > 1 ? $_[0]{'site'} = $_[1] : $_[0]{'site'} }
+sub file { @_ > 1 ? $_[0]{'file'} = $_[1] : $_[0]{'file'} }
+sub reader { @_ > 1 ? $_[0]{'reader'} = $_[1] : $_[0]{'reader'} }
 
 sub init {
     my ($self) = @_;
@@ -44,14 +50,36 @@ sub init {
     $self->{'uuidgen'} = sub {
         return $ug->create_str;
     };
-    my $site = $self->site;
+    my $site = $self->{'site'};
     $self->{'address_types'} = { map { $_->{'addressType'} => $_ } $site->address_types };
     $self->{'patron_groups'} = { map { $_->{'group'} => $_ } $site->groups };
     my $t0 = time;
-    $self->{'today'} = _utc_datetime(gmtime($t0));
-    $self->{'default_expiration_date'} = _utc_datetime(gmtime($t0+86400*30));
+    $self->{'today'} = _utc_datetime($t0);
+    $self->{'default_expiration_date'} = _utc_datetime($t0+86400*30);
     # $self->{'uuidmap'} = $site->{'uuidmap'};
     return $self;
+}
+
+sub done {
+    my ($self) = @_;
+    $self->SUPER::done;
+    delete $self->{'columns'};
+}
+
+sub sort {
+    my ($self, @files) = @_;
+    my (@students, @employees, @other);
+    foreach (@files) {
+        push(@students, $_), next if /student/i;
+        push(@employees, $_), next if /employee/i;
+        push(@other, $_);
+    }
+    return if !@employees;  # Don't load unless we have an employees file!
+    return (@other, @students, @employees);
+}
+
+sub validate {
+    my ($self, @files) = @_;
 }
 
 sub address_type_id {
@@ -66,17 +94,19 @@ sub patron_group_id {
 
 sub header_mapping {
     return _str2hash(q{
+        # ------------------ Field names that they're providing in student files
+        User_Name               username
+        Simmons_Id              externalSystemId
+        active                  active
+        Start_Date              enrollmentDate
+        ANT_CMPL_Date           expirationDate
+        Patron_Group            patronGroup
         First_Name              personal.firstName
         Middle_Name             personal.middleName
         Last_Name               personal.lastName
         Email_Address           personal.email
         Pref_Address_Phone      personal.phone
         Personal_Cell_Phone     personal.mobilePhone
-        User_Name               username
-        Simmons_Id              externalSystemId
-        active                  active
-        ANT_CMPL_Date           expirationDate
-        Patron_Group            patronGroup
         Pref_Address_Line_1     homeAddress.addressLine1
         Pref_Address_Line_2     homeAddress.addressLine2
         Pref_City               homeAddress.city
@@ -85,14 +115,42 @@ sub header_mapping {
         Dorm_Room               campusAddress.addressLine1.0.Room
         Dorm_BLDG               campusAddress.addressLine1.1.Building
         Dorm_Address_Line1      campusAddress.addressLine1.2.Remainder
-        Dorm_Addressv_Line2     campusAddress.addressLine2
+        Dorm_Address_Line2      campusAddress.addressLine2
         Dorm_City               campusAddress.city
         Dorm_State              campusAddress.region
         Dorm_Zip                campusAddress.postalCode
-        Start_Date              enrollmentDate
-        # Fields to ignore:
-		Personal_Address_Type   -
-		Dorm_Address			-
+        # I assume they'll fix this eventually:
+        Dorm_Addressv_Line2     campusAddress.addressLine2
+        # ------------------------------------------------------ Identity fields
+        username                     =
+        externalSystemId             =
+        active                       =
+        enrollmentDate               =
+        expirationDate               =
+        patronGroup                  =
+        personal.firstName           =
+        personal.middleName          =
+        personal.lastName            =
+        personal.email               =
+        personal.phone               =
+        personal.mobilePhone         =
+        campusAddress.addressTypeId  =
+        campusAddress.addressLine1   =
+        campusAddress.addressLine2   =
+        campusAddress.city           =
+        campusAddress.region         =
+        campusAddress.postalCode     =
+        homeAddress.addressTypeId    =
+        homeAddress.primaryAddress   =
+        homeAddress.addressLine1     =
+        homeAddress.addressLine2     =
+        homeAddress.city             =
+        homeAddress.region           =
+        homeAddress.postalCode       =
+        # ----------------------------------------------------- Fields to ignore
+        Personal_Address_Type        -
+        Dorm_Address                 -
+        campusAddress.primaryAddress -
         # Old field names:
         # V.FIRST.NAME        first_name
         # V.LAST.NAME         last_name
@@ -103,24 +161,87 @@ sub header_mapping {
 }
 
 sub columns {
-    my ($self, $cols) = @_;
-    return @{ $self->{'columns'} = $cols } if $cols;
-    return @{ $self->{'columns'} || [] };
+    my ($self, $fh) = @_;
+    return @{ $self->{'columns'} } if $self->{'columns'};
+    my @cols = $self->read_header($fh);
+    return $self->set_header(@cols);
+}
+
+sub _read_pipes {
+    my ($fh) = @_;
+    my $line = <$fh>;
+    return if !defined $line;
+    chomp $line;
+    my @row = split /\|/, $line;
+    for (@row) {
+        # Deal with embedded tabs and carriage returns
+        s/^[\t\x0d]|[\t\x0d]+$//g;  # Strip at beginning and end
+        s/[\t\x0d]/ /g;             # Convert to a space elsewhere
+    }
+    return @row;
+}
+
+sub _read_tabs {
+    my ($fh) = @_;
+    my $line = <$fh>;
+    return if !defined $line;
+    chomp $line;
+    my @row = split /\t/, $line;
+    for (@row) {
+        # Deal with embedded carriage returns
+        s/^\x0d|\x0d+$//g;  # Strip at beginning and end
+        s/\x0d/ /g;         # Convert to a space elsewhere
+    }
+    return @row;
+}
+
+sub read_header {
+    my ($self, $fh) = @_;
+    while (<$fh>) {
+        chomp;
+        s/\r$//;
+        my $reader;
+        my @cols;
+        if (/\t/) {
+            $reader = \&_read_tabs;
+            @cols = split /\t/;
+        }
+        elsif (/\|/) {
+            $reader = \&_read_pipes;
+            @cols = split /\|/;
+        }
+        elsif (/,/) {
+            # CSV
+            @cols = split /,/;
+            next if @cols < 5;  # Pathological!
+            my $csv = Text::CSV->new({binary => 1, auto_diag => 1});
+            $reader = sub {
+                my ($fh) = @_;
+                while (1) {
+                    my $row = $csv->getline($fh);
+                    return if !$row;
+                    for (@$row) {
+                        # Deal with embedded tabs, linefeeds, and carriage returns
+                        s/^[\t\x0a\x0d]|[\t\x0a\x0d]+$//g;  # Strip at beginning and end
+                        s/[\t\x0a\x0d]/ /g;                 # Convert to a space elsewhere
+                    }
+                    return @$row if grep { /\S/ } @$row;  # Don't return blank rows
+                }
+            };
+        }
+        next if !$reader;
+        $self->reader($reader);
+        return @cols;
+    }
+    die "no header in file";
 }
 
 sub next {
     my ($self, $fh) = @_;
-    my @cols = $self->columns;
-    my ($line, @row);
-    while (1) {
-        $line = <$fh>;
-        $self->{'eof'} = 1, return if !defined $line;
-        chomp $line;
-        $line =~ s/\r$//;
-        @row = split /\|/, $line;
-        last if @cols;
-        @cols = $self->set_header(@row);
-    }
+    my @cols = $self->columns($fh);
+    my $reader = $self->reader;
+    my @row = $reader->($fh);
+    $self->{'eof'} = 1 , return if !@row;
     my $n = @cols;
     push @row, '' while @row < $n;
     while (@row > $n) {
@@ -129,13 +250,13 @@ sub next {
         pop @row;
     }
     my %row = (
-        '_raw' => $line,
+        # '_raw' => $line,
         '_lno' => $.,
     );
     @row{@cols} = @row;
-	delete $row{'-'};  # Any ignored fields
+    delete $row{'-'};  # Any ignored fields
     my $l = $. - 2;
-    _debug("[$l] username=$row{username} <= $line");
+    _debug("[$l] username=$row{username}");
     return $self->make_user(\%row);
 }
 
@@ -144,7 +265,10 @@ sub set_header {
     my $file = $self->file;
     my %map = $self->header_mapping;
     my @mapped_header = map {
-        $map{$_} // die "unrecognized field label in header for file $file: $_"
+        my $field = $map{$_};
+        die "unrecognized field label in header for file $file: $_"
+            if !defined $field;
+        $field eq '=' ? $_ : $field;
     } @header;
     $self->{'unmapped_columns'} = \@header;
     return @{ $self->{'columns'} = \@mapped_header };
@@ -157,9 +281,9 @@ sub make_user {
     my $personal = $self->make_personal($row);
     my $user = {
         # _req('id'         => _uuid),
-        _req('_raw'    => $row->{'_raw'}),
+        # _req('_raw'    => $row->{'_raw'}),
         _req('_parsed' => $row),
-		_req('active' 		    => _bool($row->{'active'})),
+        _req('active'           => _bool($row->{'active'})),
         _req('patronGroup'      => $self->patron_group_id($row->{'patronGroup'})),
         _req('personal'         => $personal),
         _opt('externalSystemId' => $row->{'externalSystemId'}),
@@ -294,12 +418,10 @@ use vars qw(@ISA);
 sub header_mapping {
     my ($self) = @_;
     return $self->SUPER::header_mapping, _str2hash(q{
-        # ---------------------------------------------------------
-        # Unused fields:
+        # -------------------------------------------------------- Unused fields
         # Personal_Address_Type   Preferred
         # Dorm_Address            Dorm_Address
-        # ---------------------------------------------------------
-        # Old field names:
+        # ------------------------------------------------------ Old field names
         # V.STPR.ACAD.PROGRAM    program
         # V.STA.CLASS            class
         # V.ID                   id_number
@@ -384,8 +506,7 @@ use vars qw(@ISA);
 sub header_mapping {
     my ($self) = @_;
     return $self->SUPER::header_mapping, _str2hash(q{
-        # ---------------------------------------------------------
-        # Old field names:
+        # ------------------------------------------------------ Old field names
         # X.POS.DEPT                  department
         # X.POS.CLASS.TRANSLATION     affiliation
         # V.HRPER.ID                  id_number

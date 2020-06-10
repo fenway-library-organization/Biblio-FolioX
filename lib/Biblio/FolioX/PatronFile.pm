@@ -55,6 +55,7 @@ sub iterate {
     my @batch;
     my $success = 0;
     my $n = 0;
+    run_hooks($arg{'begin'});
     eval {
         while (1) {
             my ($user, $ok, $err);
@@ -80,7 +81,7 @@ sub iterate {
                 $n++;
                 my $die = 1;
                 eval {
-                    run_hooks($error, $n);
+                    run_hooks($error, $n, $@);
                     $die = 0;
                 };
             }
@@ -93,6 +94,7 @@ sub iterate {
         run_hooks($last, $self) if $n > 0;
         $success = 1;
     };
+    run_hooks($arg{'end'}, $success);
     delete $self->{'fh'};
     delete $self->{'file'} if !defined $arg{'file'};
     close $fh or $success = 0;
