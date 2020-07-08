@@ -147,10 +147,27 @@ sub header_mapping {
         homeAddress.city             =
         homeAddress.region           =
         homeAddress.postalCode       =
+        # ----------------------------------------------------- Variations (*sigh*)
+        campus.addresses.addressTypeId  campusAddress.addressTypeId
+        campus.addresses.addressLine1   campusAddress.addressLine1
+        campus.addresses.addressLine2   campusAddress.addressLine2
+        campus.addresses.city           campusAddress.city
+        campus.addresses.region         campusAddress.region
+        campus.addresses.postalCode     campusAddress.postalCode
+        home.addresses.addressTypeId    homeAddress.addressTypeId
+        home.addresses.primaryAddress   homeAddress.primaryAddress
+        home.addresses.addressLine1     homeAddress.addressLine1
+        home.addresses.addressLine2     homeAddress.addressLine2
+        home.addresses.city             homeAddress.city
+        home.addresses.region           homeAddress.region
+        home.addresses.postalCode       homeAddress.postalCode
         # ----------------------------------------------------- Fields to ignore
-        Personal_Address_Type        -
-        Dorm_Address                 -
-        campusAddress.primaryAddress -
+        Personal_Address_Type               -
+        Dorm_Address                        -
+        campusAddress.primaryAddress        -
+        personal.addresses.addressTypeId    -
+        personal.addresses.addressTypeId1   -
+        personal.addresses.primaryAddress   -
         # Old field names:
         # V.FIRST.NAME        first_name
         # V.LAST.NAME         last_name

@@ -59,7 +59,7 @@ my %contact_type_id = (
 sub init {
     my ($self) = @_;
     $self->SUPER::init;
-    $self->_init_address_types
+    $self->_init_address_types;
 }
 
 sub _init_address_types {
