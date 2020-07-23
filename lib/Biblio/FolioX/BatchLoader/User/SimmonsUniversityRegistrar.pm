@@ -5,6 +5,7 @@ use warnings;
 
 use Biblio::Folio::Site::BatchLoader;
 use Biblio::Folio::Util qw(_unique _unbless);
+use Test::Deep::NoTest;
 
 use vars qw(@ISA);
 @ISA = qw(Biblio::Folio::Site::BatchLoader);
@@ -123,7 +124,8 @@ sub _prepare_update {
     my ($object, $record) = @$member{qw(object record)};
     my $update = $member->{'update'} = _unbless($object);
     delete @$update{qw(createdDate updatedDate meta proxyFor)};  # Deprecated fields
-    $member->{'changes'} = [];
+    my @changes;
+    $member->{'changes'} = \@changes;
     # Update $update from $record
     $self->_update_fields(
         'member' => $member,
@@ -134,6 +136,10 @@ sub _prepare_update {
         },
     );
     $self->_prepare_update_personal($member);
+    if (!@changes && !$member->{'dirty'}) {
+        $self->{'action'} = 'unchanged';
+        $self->{'unchanged'} = $object;
+    }
 }
 
 sub _prefix {
@@ -226,37 +232,47 @@ sub _prepare_update_addresses {
         my $atype = $atypes->{$ati};
         my $atc = $self->site->address_type($ati)->_code;
         #my $atc = $atype->{'_code'} || $atype->{'addressType'};
-        my $pfx = qq{personal.addresses[$atc]};
+        my $pfx = qq{personal.addresses<$atc>};
         my $daddr = $daddr{$ati};
         my $saddr = $saddr{$ati};
         if ($daddr && !$saddr) {
             # Address in the existing user in FOLIO is of a type not found in the patron file being loaded
             push @daddr_new, $daddr;
-            push @$changes, ['keep', $pfx.scalar(@daddr_new)];
+            # push @$changes, ['keep', sprintf('%s[%s]', $pfx, scalar @daddr_new)];
         }
         elsif ($saddr && !$daddr) {
             # Address in the patron file being loaded is of a type not found in the existing user in FOLIO
-            push @daddr_new, $saddr;
-            push @$changes, ['add', $pfx.scalar(@daddr_new)];
+            push @daddr_new, _clean_address($saddr);
+            push @$changes, ['add', sprintf('%s[%s]', $pfx, scalar @daddr_new)];
         }
         elsif ($saddr && $daddr) {
             # The address type is found in both -- the record being loaded "wins"
             # unless the address type is designated "protected" in the load profile
             if ($daddr->{'_protect'}) {
-                push @$changes, ['protected', $pfx.scalar(@daddr_new)];
+                # push @$changes, ['protected', sprintf('%s[%s]', $pfx, scalar @daddr_new)];
             }
             else {
-                #my $i = scalar @$changes;
-                $self->_update_fields(
-                    'member' => $member,
-                    'source' => $saddr,
-                    'destination' => $daddr,
-                    'prefix' => $pfx,
-                );
-                push @daddr_new, $daddr;
-                #if (scalar @$changes > $i) {
-                #    splice @$changes, $i, 0, ['update', $pfx];
-                #}
+                my $addr = _clean_address($saddr);
+                if (!eq_deeply($addr, $daddr)) {
+                    push @daddr_new, $addr;
+                    push @$changes, ['change', sprintf('%s[%s]', $pfx, scalar @daddr_new), _address_in_one_line($daddr), _address_in_one_line($saddr)];
+                }
+                else {
+                    # Address unchanged
+                }
+###             else {
+###                 #my $i = scalar @$changes;
+###                 $self->_update_fields(
+###                     'member' => $member,
+###                     'source' => $saddr,
+###                     'destination' => $daddr,
+###                     'prefix' => $pfx,
+###                 );
+###                 push @daddr_new, $daddr;
+###                 #if (scalar @$changes > $i) {
+###                 #    splice @$changes, $i, 0, ['update', $pfx];
+###                 #}
+###             }
             }
         }
         1;
@@ -266,7 +282,52 @@ sub _prepare_update_addresses {
         my @k = grep { /^_/ } keys %$addr;
         delete @$addr{@k};
     }
-    $update->{'personal'}{'addresses'} = \@daddr_new;
+    if (!eq_deeply(\@daddr, \@daddr_new)) {
+        $update->{'personal'}{'addresses'} = \@daddr_new;
+        $member->{'dirty'} = 1;
+        if (!@$changes) {
+            # Addresses are all the same, but in a different order
+            push @$changes, ['reorder', 'addresses'];
+        }
+    }
+}
+
+sub _cmp_addresses {
+    my ($addr1, $addr2) = @_;
+    my %field = map { $_ => 1 } (keys %$addr1, keys %$addr2);
+    foreach my $k (keys %field) {
+        my ($v1, $v2) = map { $_->{$k} } $addr1, $addr2;
+        if (!defined $v1) {
+            return 1 if defined $v2;
+        }
+        elsif (!defined $v2) {
+            return 1;
+        }
+        else {
+            return 1 if $v1 ne $v2;
+        }
+    }
+    return 0;  # Identical
+}
+
+sub _clean_address {
+    my ($addr) = @_;
+    $addr->{'region'} =~ s/^Massachusetts$/MA/;
+    foreach my $k (keys %$addr) {
+        my $v = $addr->{$k};
+        delete $addr->{$k}
+            if !defined $v
+            || $v !~ /\S/;
+    }
+    return $addr;
+}
+
+sub _address_in_one_line {
+    my ($addr) = @_;
+    my $str = join(' ', map { my $v = $addr->{$_}; defined($v) && $v =~ /\S/ ? ($v) : () } qw(addressLine1 addressLine2 city region postalCode countryId));
+    $str = '[empty address]' if $str !~ /\S/;
+    $str .= ' [primary]' if $addr->{'primaryAddress'};
+    return $str;
 }
 
 1;

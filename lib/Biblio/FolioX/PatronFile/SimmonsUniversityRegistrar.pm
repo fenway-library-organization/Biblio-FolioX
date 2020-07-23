@@ -55,7 +55,7 @@ sub init {
     $self->{'patron_groups'} = { map { $_->{'group'} => $_ } $site->groups };
     my $t0 = time;
     $self->{'today'} = _utc_datetime($t0);
-    $self->{'default_expiration_date'} = _utc_datetime($t0+86400*30);
+    $self->{'default_expiration_date'} = _utc_datetime($t0+86400*100);
     # $self->{'uuidmap'} = $site->{'uuidmap'};
     return $self;
 }
@@ -316,7 +316,7 @@ sub _datetime {
     my ($str, $default) = @_;
     return $default if !defined $str;
     return _utc_datetime("$3-$1-$2") if $str =~ m{^([0-9]{2})[-/_]([0-9]{2})[-/_]([0-9]{4})$};
-    return _utc_datetime($str) if $str =~ m{^([0-9]{4})[-/_]?([0-9]{2})[-/_]?([0-9]{2})(?:$|T)};
+    return _utc_datetime("$1-$2-$3$4") if $str =~ m{^([0-9]{4})[-/_]?([0-9]{2})[-/_]?([0-9]{2})($|T.*)};
     return $default if defined $default;
     _debug("bad date/time: $str");
     die "bad date/time: $str";
